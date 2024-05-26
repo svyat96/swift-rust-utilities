@@ -7,6 +7,7 @@ pub struct LocalizableModel {
 }
 
 impl LocalizableModel {
+    /// Генерирует свойство Swift для локализованной строки
     pub fn to_swift_property(&self) -> String {
         format!("public static let {}: NSLocalizedString = .init(\"{}\", comment: .empty)", self.key, self.key)
     }

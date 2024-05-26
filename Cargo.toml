@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-plist = "1.6.1"
 regex = "1.10.4"
+tempfile = "3.10.1"

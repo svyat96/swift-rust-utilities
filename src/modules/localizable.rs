@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Write, BufReader};
 use std::path::PathBuf;
 
 pub mod localizable_model;
@@ -61,15 +61,61 @@ pub fn parse_localizable_file(
 
     // Перебираем строки файла
     for line in reader.lines() {
-        let line = line?;
-        if let Some(caps) = re.captures(&line) {
-            let key = String::from(&caps[1]);
-            let value = String::from(&caps[2]);
-            result_vec.push(LocalizableModel { key, value })
-        }
+        match line {
+            Ok(line) => {
+                if let Some(caps) = re.captures(&line) {
+                    let key = String::from(&caps[1]);
+                    let value = String::from(&caps[2]);
+                    result_vec.push(LocalizableModel { key, value });
+                }
+            },
+            Err(err) => {
+                println!("Error parse: {:#?}", err);
+                continue;
+            },
+        };
     }
 
     Ok(result_vec)
+}
+
+/// Функция для генерации Swift properties и создания файла Title.swift
+///
+/// # Аргументы
+///
+/// * `file_path` - Путь к файлу локализации
+///
+/// # Возвращает
+///
+/// * `Result<(), Box<dyn std::error::Error>>` - Результат операции
+pub fn generate_swift_file(file_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let localizables = parse_localizable_file(file_path)?;
+
+    println!("Localizable: {:#?}", localizables);
+
+    let mut swift_content = String::from("\nimport Foundation\n\npublic enum Title {\n");
+
+    for localizable in localizables {
+        swift_content.push_str("    ");
+        swift_content.push_str(&localizable.to_swift_property());
+        swift_content.push('\n');
+    }
+
+    swift_content.push_str("}\n");
+
+    // Определяем путь для создания файла Title.swift
+    let mut swift_file_path = file_path.clone();
+    swift_file_path.set_file_name("Title.swift");
+
+    // Создаем и записываем в файл Title.swift
+    let mut swift_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&swift_file_path)?;
+    write!(swift_file, "{}", swift_content)?;
+
+    Ok(())
 }
 
 /// Функция для группировки файлов по логическим группам и языкам
@@ -202,6 +248,80 @@ pub fn check_keys_consistency(paths: &[PathBuf]) -> ResultCheckKeys {
         }
     }
     ResultCheckKeys::Equatable()
+}
+
+/// Функция для обработки файла локализации
+///
+/// # Аргументы
+///
+/// * `file_path` - Путь к файлу локализации
+///
+/// # Возвращает
+///
+/// * `Result<(), String>` - Результат операции
+pub fn process_localizable_file(file_path: &PathBuf) -> Result<(), String> {
+    let file =
+        File::open(file_path).map_err(|e| format!("Error opening file {:?}: {}", file_path, e))?;
+
+    let reader = BufReader::new(file);
+
+    // Регулярное выражение для поиска строк вида "" = "";
+    let re_key_value = Regex::new(r#"^\s*"([^"]+)"\s*=\s*"([^"]*)"\s*;"#).unwrap();
+    let re_missing_value = Regex::new(r#"^\s*"([^"]+)"\s*=\s*""\s*;"#).unwrap();
+
+    let mut head_string = String::new();
+    let mut body = Vec::new();
+    let mut missing_value = Vec::new();
+    let mut in_body = false;
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Error reading line: {}", e))?;
+        if re_key_value.is_match(&line) {
+            if let Some(caps) = re_key_value.captures(&line) {
+                if caps.get(2).unwrap().as_str().is_empty() {
+                    missing_value.push(line.clone());
+                } else {
+                    body.push(line.clone());
+                }
+                in_body = true;
+            }
+        } else if re_missing_value.is_match(&line) {
+            missing_value.push(line.clone());
+            in_body = true;
+        } else {
+            if !in_body {
+                head_string.push_str(&line);
+                head_string.push('\n');
+            }
+        }
+    }
+
+    // Сортировка body по алфавитному порядку
+    body.sort_by(|a, b| {
+        let key_a = re_key_value.captures(a).unwrap().get(1).unwrap().as_str();
+        let key_b = re_key_value.captures(b).unwrap().get(1).unwrap().as_str();
+        key_a.cmp(key_b)
+    });
+
+    // Открытие файла для записи (перезапись существующего содержимого)
+    let mut new_file = OpenOptions::new().write(true).truncate(true).open(file_path)
+        .map_err(|e| format!("Error opening file {:?} for writing: {}", file_path, e))?;
+
+    // Запись данных в исходный файл
+    write!(new_file, "{}", head_string)
+        .map_err(|e| format!("Error writing to file {:?}: {}", file_path, e))?;
+    writeln!(new_file).map_err(|e| format!("Error writing to file {:?}: {}", file_path, e))?;
+    for line in &missing_value {
+        writeln!(new_file, "{}", line)
+            .map_err(|e| format!("Error writing to file {:?}: {}", file_path, e))?;
+    }
+    writeln!(new_file).map_err(|e| format!("Error writing to file {:?}: {}", file_path, e))?;
+    for line in &body {
+        writeln!(new_file, "{}", line)
+            .map_err(|e| format!("Error writing to file {:?}: {}", file_path, e))?;
+    }
+
+    Ok(())
 }
 
 /// Перечисление для результатов проверки консистентности ключей

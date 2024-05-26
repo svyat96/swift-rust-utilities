@@ -1,13 +1,18 @@
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::BufRead;
+use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::{env, fs};
-use std::io::{self, Write};
 
 mod modules;
 
-use modules::localizable::{ResultCheckKeys, check_keys_consistency, parse_localizable_file, group_files_by_logical_group_and_language, add_missing_keys_to_localizable_file};
+use modules::localizable::{
+    add_missing_keys_to_localizable_file, check_keys_consistency,
+    group_files_by_logical_group_and_language, parse_localizable_file, process_localizable_file,
+    ResultCheckKeys, generate_swift_file,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Абсолютный путь к текущей директории
@@ -44,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let path_swift_file = Path::new("sw.txt");
-    fs::write(path_swift_file, &v[0])?;
+    std::fs::write(path_swift_file, &v[0])?;
 
     println!("{:#?}", files);
 
@@ -68,17 +73,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (key, value) in vec_hash_map {
         match check_keys_consistency(&value) {
-            ResultCheckKeys::Equatable() => println!("Не требуется обновление! {}", key),
-            ResultCheckKeys::NonEquatable(hash) => { 
+            ResultCheckKeys::Equatable() => {
+                println!("Не требуется обновление! {}", key);
+
+                for file_path in &value {
+                    match process_localizable_file(file_path) {
+                        Ok(_) => { 
+                            println!("{:#?} Обновлен документ!", file_path);
+
+                            match generate_swift_file(file_path) {
+                                Ok(_) => println!("{:#?} Title.swift создан", file_path),
+                                Err(err) => println!("{:#?}: {}", file_path, err),
+                            }
+                        },
+                        Err(err) => println!("{:#?}: {}", file_path, err),
+                    }
+                }
+            }
+            ResultCheckKeys::NonEquatable(hash) => {
                 println!("{:#?}: {:#?}", key, hash);
 
                 for (file_path, missing_keys) in hash {
                     match add_missing_keys_to_localizable_file(&file_path, missing_keys) {
-                        Ok(_) => println!("{:#?} Добавили!", file_path),
+                        Ok(_) => {
+                            println!("{:#?} Добавили!", file_path);
+
+                            match process_localizable_file(&file_path) {
+                                Ok(_) => println!("{:#?} Обновлен документ!", file_path),
+                                Err(err) => println!("{:#?}: {}", file_path, err),
+                            }
+                        }
                         Err(err) => println!("{:#?}: {}", file_path, err),
                     }
                 }
-            },
+            }
             ResultCheckKeys::Error(err) => println!("{}", err),
         }
     }
@@ -92,7 +120,7 @@ fn find_files(
     exclude: &Vec<&str>,
 ) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut files = Vec::new();
-    for entry in fs::read_dir(dir)? {
+    for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         let name = &path
